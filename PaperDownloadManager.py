@@ -1,13 +1,14 @@
 # For GetCitation
 import scholarly
 import requests
-from re import sub
+import re
 # For file system monitoring
 import sys
 import time
 import logging
 from watchdog.observers import Observer
 from watchdog.events import PatternMatchingEventHandler
+from watchdog import events as evt
 # For pdf reading
 from PyPDF2 import PdfFileReader
 # For pop up dialog
@@ -15,13 +16,9 @@ import ctypes
 # For file management
 from pathlib import Path
 from os import rename
-import re
 
 def GetCitation(title: str, formatStr: str, bibFolder: str):
-    
-    # Forbidden characters
-    forbiddenChars = '[:;]'
-    
+       
     # Currently only supports reference manager format
     formats = {"rm": ".ris"}
 
@@ -38,16 +35,12 @@ def GetCitation(title: str, formatStr: str, bibFolder: str):
     
     # Adjusts the format to the requested one by changing the last query param
     citationLink[-1] = formatStr
-    
     citationLink = "=".join(citationLink)
     
     # Makes a get request to download the reference
     citationText = requests.get(citationLink).text
-    
-    title = sub(forbiddenChars, '', title)
-    
     # Filter out any problematic characters
-    re.sub(r'[^\x00-\x7f]',r' ',citationText)
+    citationText = re.sub(r'[^\x00-\x7f]',r' ', citationText)
     
     # Writes the citation file to the bibliography folder using the title as the file name7
     with open(bibFolder + "/" + title + formats[formatStr], "w+", encoding='utf-8') as citationFile:
@@ -63,8 +56,8 @@ def dialogBox(msg):
     
 
 def HandleNewFile(event):
-
-    # Filter any temp download files out
+    print(event)
+    # Filter out any temp download files
     if (event.src_path.split(".")[-1] == "crdownload"):
         return
         
@@ -77,28 +70,34 @@ def HandleNewFile(event):
         
     # Citation was downloaded successfully
     if (citationText != ""):
-        newTitle = "/".join(event.src_path.split("/")) + "/"
+        newTitle = "/".join(event.src_path.split("/")[:-1]) + "/" + title + ".pdf"
         # Rename the pdf to the title of the paper, matching the citation file
         if (event.src_path != newTitle):
-            
             rename(event.src_path, newTitle)
-        
         dialogBox("Successfully downloaded citation: \n" + citationText )
     else:
         dialogBox("No citation found for: " + event.src_path)
     
     
 def HandleRenameFile(event):
-        
+    print(event)
+    # Filter out any temp download files
+    if (event.src_path.split(".")[-1] == "crdownload"):
+        return
+    
     global bibFolder
     time.sleep(5)
-    title = ExtractTitle(event.src_path)
+    title = ExtractTitle(event.dest_path)
     
     # Check if there is a bib file in the bib folder already.
     # Currently only uses .ris files
     # If file doesn't exist, pass event to new file handler
     if (not Path(bibFolder + title + ".ris").is_file()):
-        HandleNewFile(event)
+        HandleNewFile(evt.FileCreatedEvent(event.dest_path))
+    # Ris file exists, rename pdf file to the same name as the ris file
+    else: 
+        newTitle = "/".join(event.dest_path.split("/")[:-1]) + "/" + title + ".pdf"
+        rename(event.dest_path, newTitle)
         
  
 def ExtractTitle(fullFileName):
@@ -111,13 +110,16 @@ def ExtractTitle(fullFileName):
         if (("/Title") in info):
             title = info.title 
     
-    # Get the part of the file path after the last slash
-    filenameOnly = fullFileName.split("/")[-1]
-    # Remove the extension
-    filenameOnly = filenameOnly.split(".")[0]
-    
     # Check if title exists in metadata, if not return filename as the title
-    return title if (title != "") else filenameOnly
+    if (title == ""):
+        title = fullFileName.split("/")[-1]
+        title = title.split(".")[0]        
+                
+    # Forbidden characters
+    forbiddenChars = '[:;]'
+     # Filter out any problematic characters
+    title = re.sub(forbiddenChars,'', title)
+    return title
     
 if __name__ == "__main__":
     
@@ -132,6 +134,7 @@ if __name__ == "__main__":
     
     event_handler = PatternMatchingEventHandler(patterns = folderName + "*");
     event_handler.on_created = HandleNewFile;
+    event_handler.on_moved = HandleRenameFile
 
     observer = Observer()
     observer.schedule(event_handler, folderName)
